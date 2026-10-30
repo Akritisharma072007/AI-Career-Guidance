@@ -1,0 +1,716 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import joblib
+from pathlib import Path
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+
+st.set_page_config(
+    page_title="Career Compass AI",
+    page_icon="🎓",
+    layout="wide"
+)
+
+# ---------------- DARK THEME ----------------
+st.markdown("""
+<style>
+.stApp, [data-testid="stAppViewContainer"],
+[data-testid="stMain"], [data-testid="stMainBlockContainer"] {
+    background-color: #0B0F19 !important;
+    color: #E5E7EB !important;
+}
+[data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+    background-color: #080C14 !important;
+}
+.stApp h1, .stApp h2, .stApp h3, .stApp p,
+.stApp label, .stApp li, .stApp span {
+    color: #E5E7EB !important;
+}
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stChatMessage"] {
+    background-color: #111827 !important;
+    border-color: #374151 !important;
+}
+.stApp input, .stApp textarea,
+[data-baseweb="select"] > div {
+    background-color: #111827 !important;
+    color: #FFFFFF !important;
+}
+.stButton > button, .stFormSubmitButton > button {
+    background-color: #6366F1 !important;
+    color: #FFFFFF !important;
+    border-radius: 8px !important;
+}
+.hero {
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 14px;
+    padding: 25px;
+    margin-bottom: 20px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ---------------- CAREER INFORMATION ----------------
+CAREERS = {
+    "AI/ML Engineer": {
+        "skills": ["Python", "Mathematics", "Statistics",
+                   "Machine Learning", "Data Processing"],
+        "interests": ["AI", "Coding", "Data Analysis"],
+        "roadmap": [
+            "Python Basics",
+            "Mathematics and Statistics",
+            "NumPy and Pandas",
+            "Machine Learning",
+            "AI/ML Project"
+        ],
+        "description": "Develop intelligent systems and machine learning applications."
+    },
+    "Software Developer": {
+        "skills": ["Python", "Problem Solving", "Data Structures",
+                   "Git", "Testing"],
+        "interests": ["Coding", "Software", "Problem Solving"],
+        "roadmap": [
+            "Programming Basics",
+            "Problem Solving",
+            "Data Structures",
+            "Git and Testing",
+            "Software Project"
+        ],
+        "description": "Build and maintain software applications."
+    },
+    "Data Scientist": {
+        "skills": ["Python", "SQL", "Statistics",
+                   "Pandas", "Data Visualisation"],
+        "interests": ["Data Analysis", "Mathematics", "Research"],
+        "roadmap": [
+            "Python Basics",
+            "Statistics",
+            "Data Cleaning",
+            "SQL and Visualisation",
+            "Data Analysis Project"
+        ],
+        "description": "Analyse data and identify useful patterns."
+    },
+    "Cyber Security Analyst": {
+        "skills": ["Networking", "Linux", "Security Fundamentals",
+                   "Problem Solving", "Scripting"],
+        "interests": ["Cybersecurity", "Networks", "Investigation"],
+        "roadmap": [
+            "Networking Basics",
+            "Linux Basics",
+            "Security Fundamentals",
+            "Defensive Security Tools",
+            "Security Lab Project"
+        ],
+        "description": "Help protect computer systems and networks."
+    },
+    "UI/UX Designer": {
+        "skills": ["Design Principles", "Wireframing",
+                   "Prototyping", "Figma", "User Research"],
+        "interests": ["Design", "Creativity", "User Experience"],
+        "roadmap": [
+            "Design Fundamentals",
+            "User Experience",
+            "Wireframes",
+            "Prototyping",
+            "Portfolio Project"
+        ],
+        "description": "Design useful and user-friendly digital experiences."
+    },
+    "Web Developer": {
+        "skills": ["HTML", "CSS", "JavaScript",
+                   "Git", "Responsive Design"],
+        "interests": ["Web Development", "Coding", "Design"],
+        "roadmap": [
+            "HTML Basics",
+            "CSS and Layouts",
+            "JavaScript",
+            "Responsive Design",
+            "Website Project"
+        ],
+        "description": "Create and maintain websites and web applications."
+    }
+}
+
+
+# ---------------- MODEL LOADING ----------------
+@st.cache_resource
+def load_model():
+    if Path("career_model.pkl").exists() and Path("skill_encoder.pkl").exists():
+        return (
+            joblib.load("career_model.pkl"),
+            joblib.load("skill_encoder.pkl")
+        )
+    return None, None
+
+
+model, encoder = load_model()
+
+
+# ---------------- SESSION STATE ----------------
+if "assessment" not in st.session_state:
+    st.session_state.assessment = None
+
+if "completed_steps" not in st.session_state:
+    st.session_state.completed_steps = {}
+
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+
+# ---------------- MATCH SCORING ----------------
+def calculate_match(user_skills, user_interests):
+    """
+    Transparent rule-based assessment score.
+    This is not the ML model's probability or prediction confidence.
+    """
+    skills = {s.strip().lower() for s in user_skills}
+    interests = {s.strip().lower() for s in user_interests}
+
+    results = []
+
+    for career, data in CAREERS.items():
+        required = {s.lower() for s in data["skills"]}
+        preferred = {s.lower() for s in data["interests"]}
+
+        skill_score = (
+            len(skills & required) / len(required) * 100
+            if required else 0
+        )
+        interest_score = (
+            len(interests & preferred) / len(preferred) * 100
+            if preferred else 0
+        )
+
+        # Explicitly defined assessment weighting
+        match_score = round(
+            0.7 * skill_score + 0.3 * interest_score
+        )
+
+        results.append({
+            "Career": career,
+            "Skill Match": round(skill_score),
+            "Interest Match": round(interest_score),
+            "Match Score": match_score
+        })
+
+    return pd.DataFrame(results).sort_values(
+        "Match Score", ascending=False
+    )
+
+
+# ---------------- PDF REPORT ----------------
+def create_pdf(assessment, top_career, gaps):
+    buffer = BytesIO()
+    document = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Career Compass AI", styles["Title"]))
+    story.append(Paragraph("Personal Career Analysis Report", styles["Heading2"]))
+    story.append(Spacer(1, 16))
+
+    story.append(Paragraph(
+        f"Top matching career: {top_career}",
+        styles["Heading2"]
+    ))
+    story.append(Paragraph(
+        CAREERS[top_career]["description"], styles["BodyText"]
+    ))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Career Match Scores", styles["Heading2"]))
+    for _, row in assessment.iterrows():
+        story.append(Paragraph(
+            f"{row['Career']}: {row['Match Score']}%",
+            styles["BodyText"]
+        ))
+
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Skills to Develop", styles["Heading2"]))
+
+    if gaps:
+        for skill in gaps:
+            story.append(Paragraph(skill, styles["BodyText"]))
+    else:
+        story.append(Paragraph(
+            "No skill gaps identified in this assessment.",
+            styles["BodyText"]
+        ))
+
+    document.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ---------------- SIDEBAR ----------------
+with st.sidebar:
+    st.title("🎓 Career Compass AI")
+    st.caption("Career Guidance & Analysis")
+
+    page = st.radio(
+        "NAVIGATION",
+        [
+            "Home",
+            "Career Assessment",
+            "Visualization Dashboard",
+            "Career Comparison",
+            "Learning Roadmap",
+            "Career Assistant",
+            "PDF Report"
+        ]
+    )
+
+    st.divider()
+    st.caption("Explore careers using your skills and interests.")
+
+
+# ---------------- HOME ----------------
+if page == "Home":
+    st.markdown("""
+    <div class="hero">
+        <h1>Discover Your Career Path</h1>
+        <p>
+        Explore careers, analyse your skill gaps and create
+        a personalised learning plan.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Career Options", len(CAREERS))
+    col2.metric("Analysis Tools", "4+")
+    col3.metric("Learning Plans", len(CAREERS))
+
+    st.subheader("How It Works")
+    st.markdown("""
+    1. Enter your skills and interests.
+    2. Review your career match scores.
+    3. Compare required and existing skills.
+    4. Track learning roadmap completion.
+    5. Generate a career analysis PDF report.
+    """)
+
+    st.info(
+        "Complete Career Assessment first to populate the dashboard "
+        "with your assessment results."
+    )
+
+
+# ---------------- ASSESSMENT ----------------
+elif page == "Career Assessment":
+    st.title("📝 Career Assessment")
+    st.write("Select the skills and interests you currently have.")
+
+    all_skills = sorted({
+        skill
+        for data in CAREERS.values()
+        for skill in data["skills"]
+    })
+
+    all_interests = sorted({
+        interest
+        for data in CAREERS.values()
+        for interest in data["interests"]
+    })
+
+    with st.form("assessment_form"):
+        user_skills = st.multiselect(
+            "Your Current Skills",
+            all_skills
+        )
+
+        user_interests = st.multiselect(
+            "Your Interests",
+            all_interests
+        )
+
+        submitted = st.form_submit_button("Analyse My Career Match")
+
+    if submitted:
+        if not user_skills and not user_interests:
+            st.warning("Select at least one skill or interest.")
+        else:
+            results = calculate_match(user_skills, user_interests)
+
+            st.session_state.assessment = {
+                "results": results,
+                "skills": user_skills,
+                "interests": user_interests
+            }
+
+            st.success("Assessment completed!")
+
+    assessment = st.session_state.assessment
+
+    if assessment is not None:
+        results = assessment["results"]
+        best = results.iloc[0]
+
+        st.subheader("Your Assessment Results")
+        st.metric(
+            "Top Matching Career",
+            best["Career"],
+            f"{best['Match Score']}% assessment match"
+        )
+
+        st.caption(
+            "Scores are calculated from overlapping selected skills "
+            "and interests. They are not employment probabilities."
+        )
+
+        fig = px.bar(
+            results,
+            x="Career",
+            y="Match Score",
+            color="Match Score",
+            range_y=[0, 100],
+            title="Career Match Analysis",
+            text="Match Score"
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0B0F19",
+            plot_bgcolor="#111827",
+            font_color="#E5E7EB"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------- VISUALIZATION DASHBOARD ----------------
+elif page == "Visualization Dashboard":
+    st.title("📊 Visualization Dashboard")
+
+    assessment = st.session_state.assessment
+
+    if assessment is None:
+        st.warning("Complete Career Assessment to view your results.")
+    else:
+        results = assessment["results"]
+
+        st.subheader("1. Career Match Analysis")
+        fig = px.bar(
+            results,
+            x="Career",
+            y="Match Score",
+            color="Match Score",
+            range_y=[0, 100],
+            text="Match Score"
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0B0F19",
+            plot_bgcolor="#111827",
+            font_color="#E5E7EB"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("2. Skill Match vs Interest Match")
+        comparison = results.melt(
+            id_vars="Career",
+            value_vars=["Skill Match", "Interest Match"],
+            var_name="Analysis Type",
+            value_name="Score"
+        )
+
+        fig = px.bar(
+            comparison,
+            x="Career",
+            y="Score",
+            color="Analysis Type",
+            barmode="group",
+            range_y=[0, 100]
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0B0F19",
+            plot_bgcolor="#111827",
+            font_color="#E5E7EB"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("3. Interest Distribution")
+        interests = assessment["interests"]
+
+        if interests:
+            interest_counts = pd.DataFrame({
+                "Interest": interests,
+                "Selections": [1] * len(interests)
+            })
+
+            fig = px.pie(
+                interest_counts,
+                names="Interest",
+                values="Selections",
+                hole=0.4
+            )
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="#0B0F19",
+                font_color="#E5E7EB"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No interests were selected in the assessment.")
+
+        st.subheader("4. Skill Gap Analysis")
+        top_career = results.iloc[0]["Career"]
+        required = CAREERS[top_career]["skills"]
+        current = {
+            skill.lower()
+            for skill in assessment["skills"]
+        }
+
+        gap_data = pd.DataFrame({
+            "Skill": required,
+            "Status": [
+                "Selected" if skill.lower() in current
+                else "Needs Learning"
+                for skill in required
+            ]
+        })
+
+        fig = px.bar(
+            gap_data,
+            x="Skill",
+            y=[1] * len(gap_data),
+            color="Status",
+            title=f"Skills for {top_career}"
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0B0F19",
+            plot_bgcolor="#111827",
+            font_color="#E5E7EB",
+            showlegend=True,
+            yaxis_title="Skill Status Indicator",
+            xaxis_title="Required Skill"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        missing = [
+            skill for skill in required
+            if skill.lower() not in current
+        ]
+
+        if missing:
+            st.write("**Skills to learn next:**", ", ".join(missing))
+        else:
+            st.success("All listed skills were selected in your assessment.")
+
+
+# ---------------- CAREER COMPARISON ----------------
+elif page == "Career Comparison":
+    st.title("⚖️ Interactive Career Comparison")
+
+    career_names = list(CAREERS.keys())
+
+    first = st.selectbox(
+        "First Career",
+        career_names,
+        index=0,
+        key="comparison_first"
+    )
+
+    second = st.selectbox(
+        "Second Career",
+        career_names,
+        index=1,
+        key="comparison_second"
+    )
+
+    if first == second:
+        st.warning("Select two different careers to compare.")
+    else:
+        left, right = st.columns(2)
+
+        with left:
+            st.subheader(first)
+            st.write(CAREERS[first]["description"])
+            st.write("**Required Skills**")
+            for skill in CAREERS[first]["skills"]:
+                st.markdown(f"- {skill}")
+
+        with right:
+            st.subheader(second)
+            st.write(CAREERS[second]["description"])
+            st.write("**Required Skills**")
+            for skill in CAREERS[second]["skills"]:
+                st.markdown(f"- {skill}")
+
+        first_skills = set(CAREERS[first]["skills"])
+        second_skills = set(CAREERS[second]["skills"])
+
+        comparison_data = pd.DataFrame({
+            "Skill": sorted(first_skills | second_skills)
+        })
+        comparison_data[first] = comparison_data["Skill"].apply(
+            lambda s: "Required" if s in first_skills else "Not Listed"
+        )
+        comparison_data[second] = comparison_data["Skill"].apply(
+            lambda s: "Required" if s in second_skills else "Not Listed"
+        )
+
+        st.subheader("Skill Comparison Table")
+        st.dataframe(comparison_data, use_container_width=True)
+
+
+# ---------------- LEARNING ROADMAP ----------------
+elif page == "Learning Roadmap":
+    st.title("🗺️ Learning Roadmap")
+
+    career = st.selectbox(
+        "Choose Your Target Career",
+        list(CAREERS.keys()),
+        key="roadmap_career"
+    )
+
+    steps = CAREERS[career]["roadmap"]
+
+    if career not in st.session_state.completed_steps:
+        st.session_state.completed_steps[career] = []
+
+    completed = st.session_state.completed_steps[career]
+
+    st.subheader(f"Roadmap for {career}")
+
+    for step in steps:
+        is_done = st.checkbox(
+            step,
+            value=step in completed,
+            key=f"{career}_{step}"
+        )
+
+        if is_done and step not in completed:
+            completed.append(step)
+        elif not is_done and step in completed:
+            completed.remove(step)
+
+    progress = len(completed) / len(steps) * 100
+
+    st.progress(int(progress))
+    st.metric("Learning Progress", f"{progress:.0f}%")
+
+    progress_df = pd.DataFrame({
+        "Status": ["Completed", "Remaining"],
+        "Steps": [len(completed), len(steps) - len(completed)]
+    })
+
+    fig = px.pie(
+        progress_df,
+        names="Status",
+        values="Steps",
+        hole=0.5,
+        title="Roadmap Completion"
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0B0F19",
+        font_color="#E5E7EB"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        "Progress currently remains in the active Streamlit session. "
+        "It is not saved permanently after the session ends."
+    )
+
+
+# ---------------- CAREER ASSISTANT ----------------
+elif page == "Career Assistant":
+    st.title("💬 Career Assistant")
+    st.caption("Ask about careers, skills or learning roadmaps.")
+
+    if not st.session_state.chat_messages:
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": (
+                "Hello! Ask me about AI/ML, Software Development, "
+                "Data Science, Cybersecurity, UI/UX or Web Development."
+            )
+        })
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Ask about a career...")
+
+    if prompt:
+        st.session_state.chat_messages.append({
+            "role": "user",
+            "content": prompt
+        })
+
+        text = prompt.lower()
+        answer = (
+            "I can explain these careers: "
+            + ", ".join(CAREERS.keys())
+            + ". Choose a career name for details."
+        )
+
+        for career in CAREERS:
+            if career.lower() in text:
+                data = CAREERS[career]
+                answer = (
+                    f"## {career}\n\n"
+                    f"{data['description']}\n\n"
+                    f"**Skills:** {', '.join(data['skills'])}\n\n"
+                    f"**Roadmap:** " + " → ".join(data["roadmap"])
+                )
+                break
+
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        st.rerun()
+
+    if st.button("Clear Chat"):
+        st.session_state.chat_messages = []
+        st.rerun()
+
+
+# ---------------- PDF REPORT ----------------
+elif page == "PDF Report":
+    st.title("📄 Download Career Analysis Report")
+
+    assessment = st.session_state.assessment
+
+    if assessment is None:
+        st.warning("Complete Career Assessment before creating a report.")
+    else:
+        results = assessment["results"]
+        top_career = results.iloc[0]["Career"]
+
+        current = {
+            skill.lower()
+            for skill in assessment["skills"]
+        }
+
+        gaps = [
+            f"- {skill}"
+            for skill in CAREERS[top_career]["skills"]
+            if skill.lower() not in current
+        ]
+
+        st.subheader("Report Preview")
+        st.write("**Top matching career:**", top_career)
+        st.dataframe(results, use_container_width=True)
+        st.write("**Skills to develop:**", gaps if gaps else "None identified")
+
+        pdf_bytes = create_pdf(results, top_career, gaps)
+
+        st.download_button(
+            label="Download PDF Report",
+            data=pdf_bytes,
+            file_name="Career_Compass_Analysis.pdf",
+            mime="application/pdf"
+        )
